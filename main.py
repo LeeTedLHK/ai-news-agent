@@ -19,6 +19,9 @@ CN_INCLUDE_DOMAINS = [
     "36kr.com", "jiqizhixin.com", "qbitai.com", "thepaper.cn",
 ]
 
+HISTORY_FILE = "news_history.json"
+MAX_HISTORY_URLS = 40
+
 
 def load_env():
     keys = ["TAVILY_API_KEY", "DEEPSEEK_API_KEY", "SMTP_USER", "SMTP_PASSWORD", "TO_EMAIL"]
@@ -34,16 +37,64 @@ def load_env():
     return config
 
 
-def get_yesterday():
-    yesterday = datetime.now() - timedelta(days=1)
-    date_str = yesterday.strftime("%Y-%m-%d")
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return set(data.get("sent_urls", []))
+        except Exception as e:
+            logger.warning(f"加载历史记录失败: {e}")
+    return set()
+
+
+def save_history(sent_urls):
+    urls = list(sent_urls)[-MAX_HISTORY_URLS:]
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump({"sent_urls": urls, "last_updated": datetime.now().isoformat()}, f, ensure_ascii=False, indent=2)
+
+
+def dedup_results(results, sent_urls):
+    fresh = [r for r in results if r.get("url", "") not in sent_urls]
+    logger.info(f"URL去重: {len(results)} → {len(fresh)} 条")
+    return fresh
+
+
+def mark_as_sent(news_items, sent_urls):
+    for item in news_items:
+        url = item.get("url", "")
+        if url:
+            sent_urls.add(url)
+
+
+def filter_by_date(results, cutoff_date):
+    if not results:
+        return []
+    filtered = []
+    skipped = 0
+    for r in results:
+        pub = r.get("published_date", "")
+        if pub and pub < cutoff_date:
+            skipped += 1
+            continue
+        filtered.append(r)
+    if skipped:
+        logger.info(f"时间过滤(发布日期 <= {cutoff_date}): 剔除 {skipped} 条")
+    return filtered
+
+
+def get_week_range():
+    today = datetime.now()
+    week_ago = today - timedelta(days=7)
+    week_start = week_ago.strftime("%Y-%m-%d")
+    week_end = today.strftime("%Y-%m-%d")
     weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-    weekday_cn = weekdays[yesterday.weekday()]
-    date_cn = f"{yesterday.year}年{yesterday.month}月{yesterday.day}日"
-    return date_str, weekday_cn, date_cn
+    weekday_cn = weekdays[today.weekday()]
+    range_cn = f"{week_ago.year}年{week_ago.month}月{week_ago.day}日 — {today.year}年{today.month}月{today.day}日"
+    return week_start, week_end, weekday_cn, range_cn
 
 
-def search_news(api_key, query, include_domains, max_results=5):
+def search_news(api_key, query, include_domains, max_results=10, days=7):
     client = TavilyClient(api_key=api_key)
     try:
         result = client.search(
@@ -51,6 +102,7 @@ def search_news(api_key, query, include_domains, max_results=5):
             search_depth="advanced",
             max_results=max_results,
             include_domains=include_domains,
+            days=days,
         )
         return result.get("results", [])
     except Exception as e:
@@ -58,14 +110,14 @@ def search_news(api_key, query, include_domains, max_results=5):
         return []
 
 
-def organize_news(api_key, results, date_str):
+def organize_news(api_key, results, date_range):
     if not results:
         return None
 
     snippets = []
     for i, r in enumerate(results):
         title = r.get("title", "无标题")
-        content = r.get("content", "")[:300]
+        content = r.get("content", "")[:500]
         url = r.get("url", "")
         snippets.append(
             f"[{i + 1}] 标题: {title}\n    摘要: {content}\n    链接: {url}"
@@ -74,22 +126,18 @@ def organize_news(api_key, results, date_str):
     search_text = "\n\n".join(snippets)
 
     system_prompt = (
-        "你是一名专业的AI新闻编辑。请根据以下搜索结果，整理出昨日AI领域要闻。\n\n"
+        "你是一名专业的AI新闻编辑。请根据以下搜索结果，整理出近一周AI领域最重要的5条要闻。\n\n"
         "要求：\n"
         "1. 过滤营销软文、低质重复内容，只保留有实质信息的新闻\n"
-        "2. 英文内容翻译为中文，标题和摘要都用中文输出\n"
-        "3. 按重要性排序，严格共8条\n"
-        "4. 分类: 头条(headline)1条 + 重要动态(important)3条 + 研究前沿(research)2条 + 行业观察(industry)2条\n"
-        "5. 每条摘要1-2句话，不超过80字\n"
-        "6. url必须保留原文链接，不可编造\n\n"
+        "2. 英文内容必须翻译为中文，标题和摘要都用中文输出\n"
+        "3. 按重要性排序，严格共5条，挑选最有价值、最具影响力的新闻\n"
+        "4. 每条摘要200-300字，需包含：新闻背景、核心内容、行业影响分析\n"
+        "5. url必须保留原文链接，不可编造\n\n"
         "以JSON格式输出，严格遵循以下结构，不要输出任何额外内容：\n"
-        '{"headline":[{"title":"...","summary":"...","url":"...","source":"..."}],'
-        '"important":[{"title":"...","summary":"...","url":"...","source":"..."},...],'
-        '"research":[{"title":"...","summary":"...","url":"...","source":"..."},...],'
-        '"industry":[{"title":"...","summary":"...","url":"...","source":"..."}]}'
+        '{"news":[{"title":"中文标题","summary":"200-300字的详细中文摘要，涵盖新闻背景、核心内容及行业影响分析","url":"原文链接","source":"来源"},...共5条]}'
     )
 
-    user_prompt = f"今天是{date_str}。请整理昨日AI新闻：\n\n{search_text}"
+    user_prompt = f"请整理最近一周({date_range})的AI要闻，挑选最重要的5条：\n\n{search_text}"
 
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
@@ -117,11 +165,11 @@ def send_email(smtp_user, smtp_password, to_email, html, date_str):
     import smtplib
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"AI 要闻日报 | {date_str}"
+    msg["Subject"] = f"AI 要闻周报 | {date_str}"
     msg["From"] = smtp_user
     msg["To"] = to_email
 
-    plain = f"AI 要闻日报 | {date_str}\n\n请使用支持 HTML 的邮件客户端查看。"
+    plain = f"AI 要闻周报 | {date_str}\n\n请使用支持 HTML 的邮件客户端查看。"
     msg.attach(MIMEText(plain, "plain", "utf-8"))
     msg.attach(MIMEText(html, "html", "utf-8"))
 
@@ -144,12 +192,16 @@ def main():
     config = load_env()
     logger.info("环境变量加载成功")
 
-    date_str, weekday, date_cn = get_yesterday()
-    logger.info(f"目标日期: {date_str} {weekday}")
+    week_start, week_end, weekday, date_range = get_week_range()
+    logger.info(f"时间范围: {week_start} — {week_end} {weekday}")
 
-    logger.info("开始搜索 AI 新闻...")
-    en_query = f"latest AI artificial intelligence news breakthroughs {date_str}"
-    cn_query = f"人工智能 最新新闻 突破 {date_cn}"
+    sent_urls = load_history()
+    logger.info(f"历史已发送URL: {len(sent_urls)} 条")
+
+    en_query = f"latest AI artificial intelligence news breakthroughs {week_start} {week_end}"
+    cn_query = f"人工智能 重大新闻 突破 {date_range}"
+    logger.info(f"EN查询: {en_query}")
+    logger.info(f"CN查询: {cn_query}")
 
     en_results = search_news(config["TAVILY_API_KEY"], en_query, EN_INCLUDE_DOMAINS)
     cn_results = search_news(config["TAVILY_API_KEY"], cn_query, CN_INCLUDE_DOMAINS)
@@ -157,25 +209,26 @@ def main():
     all_results = en_results + cn_results
     logger.info(f"搜索完成: 英文 {len(en_results)} 条 + 中文 {len(cn_results)} 条 = 合计 {len(all_results)} 条")
 
+    all_results = dedup_results(all_results, sent_urls)
+    all_results = filter_by_date(all_results, week_start)
+
     if not all_results:
-        logger.error("未获取到任何搜索结果，终止流程")
+        logger.error("过滤后无可用结果，终止流程")
         return
 
     logger.info("DeepSeek 整理中...")
-    organized = organize_news(config["DEEPSEEK_API_KEY"], all_results, date_str)
+    organized = organize_news(config["DEEPSEEK_API_KEY"], all_results, date_range)
 
     if not organized:
         logger.error("DeepSeek 整理失败，终止发送")
         return
 
-    html = render_html(
-        organized.get("headline", []),
-        organized.get("important", []),
-        organized.get("research", []),
-        organized.get("industry", []),
-        date_str,
-        weekday,
-    )
+    news_items = organized.get("news", [])
+    mark_as_sent(news_items, sent_urls)
+    save_history(sent_urls)
+    logger.info(f"历史URL更新: {len(sent_urls)} 条")
+
+    html = render_html(news_items, week_start, week_end, weekday)
 
     logger.info("发送邮件...")
     send_email(
@@ -183,7 +236,7 @@ def main():
         config["SMTP_PASSWORD"],
         config["TO_EMAIL"],
         html,
-        date_str,
+        week_end,
     )
 
     logger.info("=== AI News Agent 完成 ===")

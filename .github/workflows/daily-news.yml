@@ -18,6 +18,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore dedup cache
+        uses: actions/cache@v4
+        with:
+          path: news_history.json
+          key: news-history-${{ github.run_id }}
+          restore-keys: news-history-
+
       - name: Run AI News Agent
         env:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
@@ -26,3 +33,9 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           TO_EMAIL: ${{ secrets.TO_EMAIL }}
         run: python main.py
+
+      - name: Save dedup cache
+        uses: actions/cache@v4
+        with:
+          path: news_history.json
+          key: news-history-${{ github.run_id }}
