@@ -19,6 +19,18 @@ CN_INCLUDE_DOMAINS = [
     "36kr.com", "jiqizhixin.com", "qbitai.com", "thepaper.cn",
 ]
 
+# 固定简短关键词，不拼日期，时间范围由 days 参数控制
+EN_QUERIES = [
+    "AI artificial intelligence news",
+    "OpenAI Anthropic Google DeepMind",
+    "large language model LLM breakthrough",
+]
+CN_QUERIES = [
+    "人工智能 新闻",
+    "大模型 最新进展",
+    "AI 突破",
+]
+
 HISTORY_FILE = "news_history.json"
 MAX_HISTORY_URLS = 40
 
@@ -55,7 +67,13 @@ def save_history(sent_urls):
 
 
 def dedup_results(results, sent_urls):
-    fresh = [r for r in results if r.get("url", "") not in sent_urls]
+    seen_urls = set()
+    fresh = []
+    for r in results:
+        url = r.get("url", "")
+        if url and url not in sent_urls and url not in seen_urls:
+            seen_urls.add(url)
+            fresh.append(r)
     logger.info(f"URL去重: {len(results)} → {len(fresh)} 条")
     return fresh
 
@@ -79,7 +97,7 @@ def filter_by_date(results, cutoff_date):
             continue
         filtered.append(r)
     if skipped:
-        logger.info(f"时间过滤(发布日期 <= {cutoff_date}): 剔除 {skipped} 条")
+        logger.info(f"时间过滤(发布日期 < {cutoff_date}): 剔除 {skipped} 条")
     return filtered
 
 
@@ -102,12 +120,28 @@ def search_news(api_key, query, include_domains, max_results=10, days=7):
             search_depth="advanced",
             max_results=max_results,
             include_domains=include_domains,
-            days=days,
+            days=days,          # 时间范围用此参数，不把日期塞进 query
         )
-        return result.get("results", [])
+        items = result.get("results", [])
+        logger.info(f"Tavily 成功 [{query}]: {len(items)} 条")
+        return items
     except Exception as e:
-        logger.warning(f"Tavily 搜索失败 [{query[:40]}...]: {e}")
+        logger.warning(f"Tavily 搜索失败 [{query}]: {e}")
         return []
+
+
+def search_all_news(api_key, date_range_days=7):
+    """用多个简短关键词分别搜索，合并去重"""
+    en_results = []
+    for q in EN_QUERIES:
+        en_results += search_news(api_key, q, EN_INCLUDE_DOMAINS, days=date_range_days)
+
+    cn_results = []
+    for q in CN_QUERIES:
+        cn_results += search_news(api_key, q, CN_INCLUDE_DOMAINS, days=date_range_days)
+
+    logger.info(f"搜索完成: 英文 {len(en_results)} 条 + 中文 {len(cn_results)} 条 = 合计 {len(en_results + cn_results)} 条")
+    return en_results, cn_results
 
 
 def organize_news(api_key, results, date_range):
@@ -198,16 +232,9 @@ def main():
     sent_urls = load_history()
     logger.info(f"历史已发送URL: {len(sent_urls)} 条")
 
-    en_query = f"latest AI artificial intelligence news breakthroughs {week_start} {week_end}"
-    cn_query = f"人工智能 重大新闻 突破 {date_range}"
-    logger.info(f"EN查询: {en_query}")
-    logger.info(f"CN查询: {cn_query}")
-
-    en_results = search_news(config["TAVILY_API_KEY"], en_query, EN_INCLUDE_DOMAINS)
-    cn_results = search_news(config["TAVILY_API_KEY"], cn_query, CN_INCLUDE_DOMAINS)
-
+    # 修复：用多个短关键词分别搜索，不拼日期进 query
+    en_results, cn_results = search_all_news(config["TAVILY_API_KEY"], date_range_days=7)
     all_results = en_results + cn_results
-    logger.info(f"搜索完成: 英文 {len(en_results)} 条 + 中文 {len(cn_results)} 条 = 合计 {len(all_results)} 条")
 
     all_results = dedup_results(all_results, sent_urls)
     all_results = filter_by_date(all_results, week_start)
