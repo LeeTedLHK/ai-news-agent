@@ -1,20 +1,21 @@
 # AI News Agent
 
-每周自动搜索近 7 天 AI 领域要闻，经 DeepSeek 翻译整理后发送到 Gmail。
+每周自动搜索近 7 天 AI 领域要闻及 X/Twitter 讨论，经 DeepSeek 翻译整理后发送到 Gmail。
 
 ## 工作流程
 
 ```
 每日 UTC 0:00 (北京时间 8:00) GitHub Actions 自动触发
   │
-  ├─ 1. GitHub Actions Cache   → 恢复已发送 URL 历史（最多 40 条），避免重复
-  ├─ 2. Tavily Search API      → 英文 + 中文多关键词搜索（topic="news" + time_range="week" 精确过滤 7 天）
-  ├─ 3. URL 去重 + 严格日期过滤 → 剔除已发送 URL、剔除无发布日期或早于 7 天的结果
-  ├─ 4. DeepSeek deepseek-v4-flash → 挑选最重要的 5 条，英文翻译为中文
-  ├─ 5. HTML 邮件渲染           → 5 张编号卡片，各含 200-300 字详细摘要
-  └─ 6. Gmail SMTP 发送 → 推送到指定邮箱
+  ├─ 1. GitHub Actions Cache   → 恢复已发送 URL 历史（最多 50 条），避免重复
+  ├─ 2. Tavily Search API      → 英文 + 中文多关键词搜索（topic="news" + time_range="week"）
+  ├─ 3. Tavily Social Media    → X/Twitter 搜索 AI 相关讨论（platform="x" + time_range="week"）
+  ├─ 4. URL 去重 + 严格日期过滤 → 新闻与 X 分别去重、剔除无日期或超范围结果
+  ├─ 5. DeepSeek deepseek-v4-flash → 新闻精选 3 条 + X 讨论精选 3 条，英文翻译为中文
+  ├─ 6. HTML 邮件渲染           → 6 张编号卡片，新闻 3 张 + X 讨论 3 张
+  └─ 7. Gmail SMTP 发送 → 推送到指定邮箱
   │
-  └─ 7. GitHub Actions Cache   → 保存新 URL 至 history，供下次去重
+  └─ 8. GitHub Actions Cache   → 保存新 URL 至 history，供下次去重
 ```
 
 ## 快速开始
@@ -54,9 +55,9 @@ Google 账号 → 安全性 → 两步验证 → 应用专用密码 → 选择"�
 │  📰 AI 要闻周报                           │
 │  2026-05-28 — 2026-06-04  星期四          │
 │                                          │
+│  ── 📡 AI 新闻 ──                        │
 │  ① 标题一                                 │
-│  ┃ 200-300字详细摘要，涵盖新闻背景、       │
-│  ┃ 核心内容及行业影响分析... [阅读原文]     │
+│  ┃ 200-300字详细摘要... [阅读原文]         │
 │                                          │
 │  ② 标题二                                 │
 │  ┃ ...                                   │
@@ -64,10 +65,14 @@ Google 账号 → 安全性 → 两步验证 → 应用专用密码 → 选择"�
 │  ③ 标题三                                 │
 │  ┃ ...                                   │
 │                                          │
+│  ── 𝕏 X 讨论 ──                          │
 │  ④ 标题四                                 │
-│  ┃ ...                                   │
+│  ┃ 150-250字摘要，含来源和观点分析...      │
 │                                          │
 │  ⑤ 标题五                                 │
+│  ┃ ...                                   │
+│                                          │
+│  ⑥ 标题六                                 │
 │  ┃ ...                                   │
 │                                          │
 │  由 AI News Agent 自动生成                │

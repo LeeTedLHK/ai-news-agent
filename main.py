@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta
 
 from tavily import TavilyClient
+from tavily_agent_toolkit import social_media_search
 from openai import OpenAI
 
 from template import render_html
@@ -31,8 +32,15 @@ CN_QUERIES = [
     "AI 突破",
 ]
 
+# X/Twitter 搜索关键词
+X_QUERIES = [
+    "AI artificial intelligence breakthrough research",
+    "OpenAI Anthropic Google DeepMind latest",
+    "LLM large language model development",
+]
+
 HISTORY_FILE = "news_history.json"
-MAX_HISTORY_URLS = 40
+MAX_HISTORY_URLS = 50
 
 
 def load_env():
@@ -151,6 +159,27 @@ def search_all_news(api_key):
     return en_results, cn_results
 
 
+def search_x_posts(api_key, max_results=5):
+    """在 X/Twitter 上搜索 AI 相关讨论"""
+    all_posts = []
+    for q in X_QUERIES:
+        try:
+            result = social_media_search(
+                query=q,
+                api_key=api_key,
+                platform="x",
+                max_results=max_results,
+                time_range="week",
+                include_raw_content=True,
+            )
+            items = result.get("results", [])
+            logger.info(f"X 搜索成功 [{q}]: {len(items)} 条")
+            all_posts += items
+        except Exception as e:
+            logger.warning(f"X 搜索失败 [{q}]: {e}")
+    return all_posts
+
+
 def organize_news(api_key, results, date_range):
     if not results:
         return None
@@ -167,18 +196,18 @@ def organize_news(api_key, results, date_range):
     search_text = "\n\n".join(snippets)
 
     system_prompt = (
-        "你是一名专业的AI新闻编辑。请根据以下搜索结果，整理出近一周AI领域最重要的5条要闻。\n\n"
+        "你是一名专业的AI新闻编辑。请根据以下搜索结果，整理出近一周AI领域最重要的3条要闻。\n\n"
         "要求：\n"
         "1. 过滤营销软文、低质重复内容，只保留有实质信息的新闻\n"
         "2. 英文内容必须翻译为中文，标题和摘要都用中文输出\n"
-        "3. 按重要性排序，严格共5条，挑选最有价值、最具影响力的新闻\n"
+        "3. 按重要性排序，严格共3条，挑选最有价值、最具影响力的新闻\n"
         "4. 每条摘要200-300字，需包含：新闻背景、核心内容、行业影响分析\n"
         "5. url必须保留原文链接，不可编造\n\n"
         "以JSON格式输出，严格遵循以下结构，不要输出任何额外内容：\n"
-        '{"news":[{"title":"中文标题","summary":"200-300字的详细中文摘要，涵盖新闻背景、核心内容及行业影响分析","url":"原文链接","source":"来源"},...共5条]}'
+        '{"news":[{"title":"中文标题","summary":"200-300字的详细中文摘要，涵盖新闻背景、核心内容及行业影响分析","url":"原文链接","source":"来源"},...共3条]}'
     )
 
-    user_prompt = f"请整理最近一周({date_range})的AI要闻，挑选最重要的5条：\n\n{search_text}"
+    user_prompt = f"请整理最近一周({date_range})的AI要闻，挑选最重要的3条：\n\n{search_text}"
 
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
@@ -197,6 +226,58 @@ def organize_news(api_key, results, date_range):
         return json.loads(content)
     except Exception as e:
         logger.error(f"DeepSeek 整理失败: {e}")
+        return None
+
+
+def organize_x_posts(api_key, results, date_range):
+    """从 X/Twitter 帖子中挑选最重要的 3 条 AI 讨论"""
+    if not results:
+        return None
+
+    snippets = []
+    for i, r in enumerate(results):
+        title = r.get("title", "无标题")
+        content = r.get("content", "")[:500]
+        url = r.get("url", "")
+        source = r.get("source", "X")
+        snippets.append(
+            f"[{i + 1}] 标题: {title}\n    内容: {content}\n    链接: {url}\n    来源: {source}"
+        )
+
+    search_text = "\n\n".join(snippets)
+
+    system_prompt = (
+        "你是一名专业的AI信息编辑。请根据以下 X/Twitter 上的 AI 相关讨论，挑选最重要的 3 条。\n\n"
+        "要求：\n"
+        "1. 优先选择有独特观点的讨论、知名研究者的发言、或重大事件的独家爆料\n"
+        "2. 英文内容必须翻译为中文，标题和摘要都用中文输出\n"
+        "3. 按重要性排序，严格共3条\n"
+        "4. 每条摘要150-250字，需包含：发言者/来源、核心观点、为什么重要\n"
+        "5. X平台内容权威性低于新闻，请甄别未经证实的传言，优先保留有实质论据的观点\n"
+        "6. url必须保留原文链接，不可编造\n\n"
+        "以JSON格式输出，严格遵循以下结构，不要输出任何额外内容：\n"
+        '{"news":[{"title":"中文标题","summary":"150-250字的详细中文摘要，涵盖来源、核心观点及重要性分析","url":"原文链接","source":"X"},...共3条]}'
+    )
+
+    user_prompt = f"请整理最近一周({date_range})X平台上的AI重要讨论，挑选最重要的3条：\n\n{search_text}"
+
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-v4-flash",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
+        logger.info(f"DeepSeek X整理 输出长度: {len(content)} 字符")
+        return json.loads(content)
+    except Exception as e:
+        logger.error(f"DeepSeek X整理失败: {e}")
         return None
 
 
@@ -239,30 +320,48 @@ def main():
     sent_urls = load_history()
     logger.info(f"历史已发送URL: {len(sent_urls)} 条")
 
-    # 用多个短关键词分别搜索，日期范围由 Tavily topic="news" + time_range="week" 控制
+    # 新闻搜索：多个短关键词，topic="news" + time_range="week"
     en_results, cn_results = search_all_news(config["TAVILY_API_KEY"])
-    all_results = en_results + cn_results
+    news_results = en_results + cn_results
 
-    all_results = dedup_results(all_results, sent_urls)
-    all_results = filter_by_date(all_results, week_start)
+    # X/Twitter 搜索
+    logger.info("X 搜索中...")
+    x_results = search_x_posts(config["TAVILY_API_KEY"])
 
-    if not all_results:
+    # 分别去重 + 日期过滤
+    news_results = dedup_results(news_results, sent_urls)
+    news_results = filter_by_date(news_results, week_start)
+
+    x_results = dedup_results(x_results, sent_urls)
+    # X 帖子通常无 published_date，跳过客户端日期过滤（API time_range="week" 已过滤）
+
+    if not news_results and not x_results:
         logger.error("过滤后无可用结果，终止流程")
         return
 
-    logger.info("DeepSeek 整理中...")
-    organized = organize_news(config["DEEPSEEK_API_KEY"], all_results, date_range)
+    # DeepSeek 分别整理
+    logger.info("DeepSeek 整理新闻...")
+    organized_news = organize_news(config["DEEPSEEK_API_KEY"], news_results, date_range)
 
-    if not organized:
-        logger.error("DeepSeek 整理失败，终止发送")
+    logger.info("DeepSeek 整理 X 讨论...")
+    organized_x = organize_x_posts(config["DEEPSEEK_API_KEY"], x_results, date_range)
+
+    # 合并结果：新闻 3 条 + X 3 条
+    all_items = []
+    if organized_news:
+        all_items += organized_news.get("news", [])
+    if organized_x:
+        all_items += organized_x.get("news", [])
+
+    if not all_items:
+        logger.error("DeepSeek 整理后无结果，终止发送")
         return
 
-    news_items = organized.get("news", [])
-    mark_as_sent(news_items, sent_urls)
+    mark_as_sent(all_items, sent_urls)
     save_history(sent_urls)
     logger.info(f"历史URL更新: {len(sent_urls)} 条")
 
-    html = render_html(news_items, week_start, week_end, weekday)
+    html = render_html(all_items, week_start, week_end, weekday)
 
     logger.info("发送邮件...")
     send_email(

@@ -54,7 +54,7 @@ def render_html(news_list, week_start, week_end, weekday):
 """
 
     html += """    <div class="footer">
-      <p>由 AI News Agent 自动生成 · 新闻来源: Tavily Search · 整理: DeepSeek</p>
+      <p>由 AI News Agent 自动生成 · 来源: Tavily Search & X · 整理: DeepSeek</p>
     </div>
   </div>
 </div>
