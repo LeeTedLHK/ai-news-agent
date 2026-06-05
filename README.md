@@ -8,8 +8,8 @@
 每日 UTC 0:00 (北京时间 8:00) GitHub Actions 自动触发
   │
   ├─ 1. GitHub Actions Cache   → 恢复已发送 URL 历史（最多 40 条），避免重复
-  ├─ 2. Tavily Search API      → 英文 + 中文并行搜索（带日期范围，过滤低质来源）
-  ├─ 3. URL 去重 + 日期过滤    → 剔除已发送 URL、剔除发布日期早于 7 天的结果
+  ├─ 2. Tavily Search API      → 英文 + 中文多关键词搜索（topic="news" + time_range="week" 精确过滤 7 天）
+  ├─ 3. URL 去重 + 严格日期过滤 → 剔除已发送 URL、剔除无发布日期或早于 7 天的结果
   ├─ 4. DeepSeek deepseek-v4-flash → 挑选最重要的 5 条，英文翻译为中文
   ├─ 5. HTML 邮件渲染           → 5 张编号卡片，各含 200-300 字详细摘要
   └─ 6. Gmail SMTP 发送 → 推送到指定邮箱
@@ -77,6 +77,17 @@ Google 账号 → 安全性 → 两步验证 → 应用专用密码 → 选择"�
 ## 去重机制
 
 每次运行通过 GitHub Actions Cache 保存 `news_history.json`（最近 40 条已发送 URL），下次运行时自动过滤重复新闻。Cache 有效期内不会丢失，确保周报间内容不重复。
+
+## 日期过滤
+
+采用两层防线确保新闻时效性（严格 7 天内）：
+
+| 层级 | 机制 | 说明 |
+|------|------|------|
+| 服务端 | Tavily `topic="news"` + `time_range="week"` | 切换到新闻索引，API 层面精确过滤最近一周 |
+| 客户端 | `filter_by_date()` 严格模式 | 丢弃无 `published_date` 的结果，剔除超出范围的结果 |
+
+无发布日期的结果会被直接丢弃，确保不会出现 26 天前的旧闻混入周报。
 
 ## 搜索白名单
 

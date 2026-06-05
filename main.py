@@ -19,7 +19,7 @@ CN_INCLUDE_DOMAINS = [
     "36kr.com", "jiqizhixin.com", "qbitai.com", "thepaper.cn",
 ]
 
-# 固定简短关键词，不拼日期，时间范围由 days 参数控制
+# 固定简短关键词，不拼日期，时间范围由 Tavily topic="news" + time_range="week" 控制
 EN_QUERIES = [
     "AI artificial intelligence news",
     "OpenAI Anthropic Google DeepMind",
@@ -89,15 +89,21 @@ def filter_by_date(results, cutoff_date):
     if not results:
         return []
     filtered = []
-    skipped = 0
+    skipped_no_date = 0
+    skipped_old = 0
     for r in results:
         pub = r.get("published_date", "")
-        if pub and pub < cutoff_date:
-            skipped += 1
+        if not pub:
+            skipped_no_date += 1
+            continue
+        if pub < cutoff_date:
+            skipped_old += 1
             continue
         filtered.append(r)
-    if skipped:
-        logger.info(f"时间过滤(发布日期 < {cutoff_date}): 剔除 {skipped} 条")
+    if skipped_no_date:
+        logger.info(f"时间过滤: 剔除 {skipped_no_date} 条(无发布日期)")
+    if skipped_old:
+        logger.info(f"时间过滤: 剔除 {skipped_old} 条(发布日期 < {cutoff_date})")
     return filtered
 
 
@@ -112,15 +118,16 @@ def get_week_range():
     return week_start, week_end, weekday_cn, range_cn
 
 
-def search_news(api_key, query, include_domains, max_results=10, days=7):
+def search_news(api_key, query, include_domains, max_results=15):
     client = TavilyClient(api_key=api_key)
     try:
         result = client.search(
             query=query,
             search_depth="advanced",
+            topic="news",
+            time_range="week",
             max_results=max_results,
             include_domains=include_domains,
-            days=days,          # 时间范围用此参数，不把日期塞进 query
         )
         items = result.get("results", [])
         logger.info(f"Tavily 成功 [{query}]: {len(items)} 条")
@@ -130,15 +137,15 @@ def search_news(api_key, query, include_domains, max_results=10, days=7):
         return []
 
 
-def search_all_news(api_key, date_range_days=7):
-    """用多个简短关键词分别搜索，合并去重"""
+def search_all_news(api_key):
+    """用多个简短关键词分别搜索，合并结果（去重由调用方完成）"""
     en_results = []
     for q in EN_QUERIES:
-        en_results += search_news(api_key, q, EN_INCLUDE_DOMAINS, days=date_range_days)
+        en_results += search_news(api_key, q, EN_INCLUDE_DOMAINS)
 
     cn_results = []
     for q in CN_QUERIES:
-        cn_results += search_news(api_key, q, CN_INCLUDE_DOMAINS, days=date_range_days)
+        cn_results += search_news(api_key, q, CN_INCLUDE_DOMAINS)
 
     logger.info(f"搜索完成: 英文 {len(en_results)} 条 + 中文 {len(cn_results)} 条 = 合计 {len(en_results + cn_results)} 条")
     return en_results, cn_results
@@ -232,8 +239,8 @@ def main():
     sent_urls = load_history()
     logger.info(f"历史已发送URL: {len(sent_urls)} 条")
 
-    # 修复：用多个短关键词分别搜索，不拼日期进 query
-    en_results, cn_results = search_all_news(config["TAVILY_API_KEY"], date_range_days=7)
+    # 用多个短关键词分别搜索，日期范围由 Tavily topic="news" + time_range="week" 控制
+    en_results, cn_results = search_all_news(config["TAVILY_API_KEY"])
     all_results = en_results + cn_results
 
     all_results = dedup_results(all_results, sent_urls)
